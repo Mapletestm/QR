@@ -1,1 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Network Access Auto-Detect → Zapier</title>
+<style>
+  :root{--bg:#0b1220;--panel:#0f172a;--text:#e5e7eb;--muted:#94a3b8;--accent:#60a5fa}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  .wrap{max-width:720px;margin:0 auto;padding:28px}
+  .card{background:var(--panel);border-radius:16px;padding:22px;box-shadow:0 10px 24px rgba(0,0,0,.45)}
+  h1{font-size:1.25rem;margin:0 0 8px} p{color:var(--muted);margin:6px 0}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.95rem;background:#0a0f1a;padding:12px;border-radius:12px;word-break:break-all}
+  .ok{color:#10b981} .err{color:#ef4444}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Detecting Network Access…</h1>
+      <p>This page automatically determines whether the device is on <strong>Wi-Fi</strong> or <strong>Cellular</strong> (where supported) and sends the result to Zapier.</p>
+      <div id="log" class="mono">Initializing…</div>
+    </div>
+  </div>
 
+<script>
+(async () => {
+  const ZAPIER_WEBHOOK = "https://hooks.zapier.com/hooks/catch/24106739/udw561h/"; // ← replace with your real Catch Hook
+
+  const logEl = document.getElementById('log');
+  const log = (msg, cls) => {
+    logEl.textContent = msg;
+    if (cls) logEl.className = "mono " + cls; else logEl.className = "mono";
+  };
+
+  // Helper: best-effort detection using Network Information API (when available)
+  function detectNetworkAccess() {
+    const ua = navigator.userAgent || "";
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
+
+    // What we can reliably read cross-platform:
+    const info = {
+      connectionTypeRaw: conn && ('type' in conn) ? conn.type : null, // may be 'wifi' | 'cellular' (rarely exposed)
+      effectiveType: conn && conn.effectiveType || null,             // '4g' | '3g' | '2g' | 'slow-2g'
+      downlink: conn && typeof conn.downlink === 'number' ? conn.downlink : null, // Mbps
+      rtt: conn && typeof conn.rtt === 'number' ? conn.rtt : null,   // ms
+      saveData: conn && typeof conn.saveData === 'boolean' ? conn.saveData : null,
+      userAgent: ua,
+      platform: navigator.platform || null,
+      userAgentDataMobile: (navigator.userAgentData && 'mobile' in navigator.userAgentData) ? navigator.userAgentData.mobile : null,
+    };
+
+    // Decide "wifi" | "cellular" | "unknown"
+    // 1) If the browser exposes a real type, use it.
+    let access = "unknown";
+    if (info.connectionTypeRaw === "wifi") access = "wifi";
+    else if (info.connectionTypeRaw === "cellular") access = "cellular";
+    else {
+      // 2) Heuristic (not guaranteed): On some Android Chromium builds, effectiveType may exist on both Wi-Fi and cellular.
+      // We will NOT guess "cellular" from '4g' because Wi-Fi can also show '4g' effectiveType.
+      // Therefore, if no explicit 'type', we keep 'unknown' to avoid false claims.
+      access = "unknown";
+    }
+
+    return { access, info };
+  }
+
+  try {
+    const { access, info } = detectNetworkAccess();
+    log(`Detected access: ${access}\n\nDetails:\n${JSON.stringify(info, null, 2)}`);
+
+    // Send immediately to Zapier
+    const payload = {
+      timestamp: new Date().toISOString(),
+      network_access: access,             // "wifi" | "cellular" | "unknown"
+      connection_type_raw: info.connectionTypeRaw,
+      effective_type: info.effectiveType,
+      downlink_mbps: info.downlink,
+      rtt_ms: info.rtt,
+      save_data: info.saveData,
+      user_agent: info.userAgent,
+      platform: info.platform,
+      user_agent_data_mobile: info.userAgentDataMobile
+    };
+
+    const res = await fetch(ZAPIER_WEBHOOK, {
+      method: "POST",
+      mode: "cors",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error(`Zapier responded with ${res.status}`);
+
+    log(`Sent to Zapier ✅\n\n${JSON.stringify(payload, null, 2)}`, "ok");
+  } catch (err) {
+    log(`Failed to send to Zapier ❌\n${err}`, "err");
+    console.error(err);
+  }
+
+  // Optional: if network conditions change during the session, you could re-send.
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
+  if (conn && typeof conn.addEventListener === "function") {
+    conn.addEventListener("change", async () => {
+      try {
+        const { access, info } = detectNetworkAccess();
+        const payload = {
+          timestamp: new Date().toISOString(),
+          network_access: access,
+          connection_type_raw: info.connectionTypeRaw,
+          effective_type: info.effectiveType,
+          downlink_mbps: info.downlink,
+          rtt_ms: info.rtt,
+          save_data: info.saveData,
+          user_agent: info.userAgent,
+          platform: info.platform,
+          user_agent_data_mobile: info.userAgentDataMobile,
+          event: "connectionchange"
+        };
+        await fetch(ZAPIER_WEBHOOK, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        log(`Change detected & sent ✅\n\n${JSON.stringify(payload, null, 2)}`, "ok");
+      } catch (e) {
+        log(`Failed on change event ❌\n${e}`, "err");
+      }
+    });
+  }
+})();
+</script>
+</body>
+</html>
