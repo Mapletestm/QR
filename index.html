@@ -36,16 +36,16 @@
 
 <script>
 /** ===================== CONFIG ===================== **/
-const WEBHOOK_URL = "https://hooks.zapier.com/hooks/catch/24106739/udw39uu/"; // <-- REPLACE with your Zapier/Make webhook
-const SHOW_PREVIEW = true; // set to false if you don’t want users to see the captured summary
+const WEBHOOK_URL = "https://hooks.zapier.com/hooks/catch/24106739/udw39uu/"; // your Catch Hook
+const SHOW_PREVIEW = true; // set to false to hide the JSON preview
 
-/** =================== HELPERS ====================== **/
+/** ================ HELPERS (no keys needed) ================ **/
 function getConnHints(){
   const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   return c ? {
-    effectiveType: c.effectiveType || null,  // '4g','3g','wifi' (varies)
-    downlink: c.downlink ?? null,            // Mbps (approx)
-    rtt: c.rtt ?? null,                      // ms (approx)
+    effectiveType: c.effectiveType || null,  // '4g','3g','slow-2g' (varies; iOS may be null)
+    downlink: c.downlink ?? null,            // Mbps approx
+    rtt: c.rtt ?? null,                      // ms approx
     saveData: !!c.saveData
   } : {};
 }
@@ -57,7 +57,7 @@ function labelLikelyConnection(org, hints){
     "telecom","vodafone","orange","o2","telefonica","rogers","bell","telus","docomo"
   ];
   const isMobileASN = mobileMarkers.some(m => orgStr.includes(m));
-  const eff = (hints?.effectiveType || "").toLowerCase(); // '2g','3g','4g','5g','slow-2g'
+  const eff = (hints?.effectiveType || "").toLowerCase();
   const isMobileHint = ["2g","3g","4g","5g","slow-2g"].includes(eff);
   if (isMobileASN || isMobileHint) return "Likely Cellular";
   if (org) return "Likely Wi-Fi/Ethernet";
@@ -65,8 +65,6 @@ function labelLikelyConnection(org, hints){
 }
 
 async function fetchIPMeta(){
-  // Public, no-key endpoint (rate-limited): returns ip, org, asn, city, region, etc.
-  // Docs: https://ipapi.co/
   try{
     const r = await fetch("https://ipapi.co/json/");
     if(!r.ok) throw new Error("ipapi.co error");
@@ -82,13 +80,23 @@ async function fetchIPMeta(){
       longitude: j.longitude ?? null
     };
   }catch(e){
-    // Fallback: try ipify for IP only
     try{
       const r2 = await fetch("https://api.ipify.org?format=json");
       const j2 = await r2.json();
       return { ip: j2.ip || null };
     }catch(_){ return {}; }
   }
+}
+
+/** ======= CORS-proof sender: GET with ?q=<JSON> ======= **/
+function deliver(payload){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    const q = encodeURIComponent(JSON.stringify(payload));
+    img.onload  = () => resolve(true);
+    img.onerror = () => resolve(false);
+    img.src = WEBHOOK_URL + "?q=" + q; // Zapier will receive `q` as a string
+  });
 }
 
 /** ===================== MAIN ======================= **/
@@ -111,7 +119,6 @@ consentBtn.addEventListener("click", async () => {
 
   const hints = getConnHints();
   const ipmeta = await fetchIPMeta();
-
   const likely = labelLikelyConnection(ipmeta.org, hints);
 
   const payload = {
@@ -136,29 +143,19 @@ consentBtn.addEventListener("click", async () => {
     inferred_connection: likely
   };
 
-  // Show user preview (optional)
   if (SHOW_PREVIEW){
     previewEl.style.display = "block";
     previewEl.textContent = JSON.stringify(payload, null, 2);
   }
 
-  // Send to your webhook
-  try{
-    const res = await fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) throw new Error("Webhook rejected");
-    statusEl.innerHTML = `<span class="ok">✓ Report sent successfully.</span>`;
-  }catch(e){
-    statusEl.innerHTML = `<span class="err">✗ Could not send to webhook. Check your WEBHOOK_URL.</span>`;
-  }finally{
-    footEl.textContent = "Tip: Generate a QR code for this page URL to use in your class exercise.";
-    consentBtn.disabled = false;
-  }
+  const ok = await deliver(payload);
+  statusEl.innerHTML = ok
+    ? `<span class="ok">✓ Report sent successfully.</span>`
+    : `<span class="err">✗ Could not send to webhook. Check your WEBHOOK_URL.</span>`;
+
+  footEl.textContent = "Tip: Generate a QR code for this page URL to use in your class exercise.";
+  consentBtn.disabled = false;
 });
 </script>
 </body>
 </html>
-
