@@ -18,61 +18,73 @@
   <div class="wrap">
     <div class="card">
       <h1>Detecting Network Access…</h1>
-      <p>This page automatically determines whether the device is on <strong>Wi-Fi</strong> or <strong>Cellular</strong> (where supported) and sends the result to Zapier.</p>
+      <p>This page determines whether the device is on <strong>Wi-Fi</strong> or <strong>Cellular</strong> where supported and sends the result to Zapier.</p>
       <div id="log" class="mono">Initializing…</div>
     </div>
   </div>
 
 <script>
 (async () => {
-  const ZAPIER_WEBHOOK = "https://hooks.zapier.com/hooks/catch/24106739/udw561h/"; // ← replace with your real Catch Hook
+  const ZAPIER_WEBHOOK = "https://hooks.zapier.com/hooks/catch/XXXX/YYYY/"; // ← replace
 
   const logEl = document.getElementById('log');
-  const log = (msg, cls) => {
-    logEl.textContent = msg;
-    if (cls) logEl.className = "mono " + cls; else logEl.className = "mono";
-  };
+  const log = (msg, cls) => { logEl.textContent = msg; logEl.className = "mono" + (cls ? " " + cls : ""); };
 
-  // Helper: best-effort detection using Network Information API (when available)
   function detectNetworkAccess() {
-    const ua = navigator.userAgent || "";
     const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
+    const ua = navigator.userAgent || "";
 
-    // What we can reliably read cross-platform:
     const info = {
-      connectionTypeRaw: conn && ('type' in conn) ? conn.type : null, // may be 'wifi' | 'cellular' (rarely exposed)
-      effectiveType: conn && conn.effectiveType || null,             // '4g' | '3g' | '2g' | 'slow-2g'
-      downlink: conn && typeof conn.downlink === 'number' ? conn.downlink : null, // Mbps
-      rtt: conn && typeof conn.rtt === 'number' ? conn.rtt : null,   // ms
-      saveData: conn && typeof conn.saveData === 'boolean' ? conn.saveData : null,
+      connectionTypeRaw: conn && ('type' in conn) ? conn.type : null,   // 'wifi' | 'cellular' (rare)
+      effectiveType: conn && conn.effectiveType || null,                // '4g' | '3g' | '2g' | 'slow-2g'
+      downlink: (conn && typeof conn.downlink === 'number') ? conn.downlink : null, // Mbps
+      rtt: (conn && typeof conn.rtt === 'number') ? conn.rtt : null,    // ms
+      saveData: (conn && typeof conn.saveData === 'boolean') ? conn.saveData : null,
       userAgent: ua,
       platform: navigator.platform || null,
       userAgentDataMobile: (navigator.userAgentData && 'mobile' in navigator.userAgentData) ? navigator.userAgentData.mobile : null,
     };
 
-    // Decide "wifi" | "cellular" | "unknown"
-    // 1) If the browser exposes a real type, use it.
     let access = "unknown";
     if (info.connectionTypeRaw === "wifi") access = "wifi";
     else if (info.connectionTypeRaw === "cellular") access = "cellular";
-    else {
-      // 2) Heuristic (not guaranteed): On some Android Chromium builds, effectiveType may exist on both Wi-Fi and cellular.
-      // We will NOT guess "cellular" from '4g' because Wi-Fi can also show '4g' effectiveType.
-      // Therefore, if no explicit 'type', we keep 'unknown' to avoid false claims.
-      access = "unknown";
-    }
 
     return { access, info };
   }
 
+  function toFormData(obj) {
+    const fd = new FormData();
+    Object.entries(obj).forEach(([k, v]) => {
+      const val = (v === null || v === undefined) ? "" : (typeof v === "object" ? JSON.stringify(v) : String(v));
+      fd.append(k, val);
+    });
+    return fd;
+  }
+
+  async function sendToZapierSimple(payload) {
+    // Simple request: no headers, FormData body → no preflight/CORS error
+    const body = toFormData(payload);
+    // Do NOT set headers. Do NOT set content-type. Let the browser handle it.
+    // Avoid mode:'no-cors' unless you truly don't care about response visibility.
+    const res = await fetch(ZAPIER_WEBHOOK, { method: "POST", body });
+    return res;
+  }
+
+  function sendWithBeaconFallback(payload) {
+    try {
+      const ok = navigator.sendBeacon(
+        ZAPIER_WEBHOOK,
+        new Blob([JSON.stringify(payload)], { type: "text/plain;charset=UTF-8" }) // simple content-type
+      );
+      return ok;
+    } catch { return false; }
+  }
+
   try {
     const { access, info } = detectNetworkAccess();
-    log(`Detected access: ${access}\n\nDetails:\n${JSON.stringify(info, null, 2)}`);
-
-    // Send immediately to Zapier
     const payload = {
       timestamp: new Date().toISOString(),
-      network_access: access,             // "wifi" | "cellular" | "unknown"
+      network_access: access,                // "wifi" | "cellular" | "unknown"
       connection_type_raw: info.connectionTypeRaw,
       effective_type: info.effectiveType,
       downlink_mbps: info.downlink,
@@ -80,53 +92,44 @@
       save_data: info.saveData,
       user_agent: info.userAgent,
       platform: info.platform,
-      user_agent_data_mobile: info.userAgentDataMobile
+      user_agent_data_mobile: info.userAgentDataMobile,
+      page_url: location.href
     };
 
-    const res = await fetch(ZAPIER_WEBHOOK, {
-      method: "POST",
-      mode: "cors",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    log(`Detected access: ${access}\n\nDetails:\n${JSON.stringify(info, null, 2)}`);
 
-    if (!res.ok) throw new Error(`Zapier responded with ${res.status}`);
-
-    log(`Sent to Zapier ✅\n\n${JSON.stringify(payload, null, 2)}`, "ok");
-  } catch (err) {
-    log(`Failed to send to Zapier ❌\n${err}`, "err");
-    console.error(err);
-  }
-
-  // Optional: if network conditions change during the session, you could re-send.
-  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
-  if (conn && typeof conn.addEventListener === "function") {
-    conn.addEventListener("change", async () => {
-      try {
-        const { access, info } = detectNetworkAccess();
-        const payload = {
-          timestamp: new Date().toISOString(),
-          network_access: access,
-          connection_type_raw: info.connectionTypeRaw,
-          effective_type: info.effectiveType,
-          downlink_mbps: info.downlink,
-          rtt_ms: info.rtt,
-          save_data: info.saveData,
-          user_agent: info.userAgent,
-          platform: info.platform,
-          user_agent_data_mobile: info.userAgentDataMobile,
-          event: "connectionchange"
-        };
-        await fetch(ZAPIER_WEBHOOK, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        log(`Change detected & sent ✅\n\n${JSON.stringify(payload, null, 2)}`, "ok");
-      } catch (e) {
-        log(`Failed on change event ❌\n${e}`, "err");
+    try {
+      const res = await sendToZapierSimple(payload);
+      if (!res.ok) throw new Error(`Zapier responded ${res.status}`);
+      log(`Sent to Zapier ✅\n\n${JSON.stringify(payload, null, 2)}`, "ok");
+    } catch (e) {
+      // Fall back to sendBeacon (no preflight, text/plain) — publish Zap as "Catch Raw Hook" if you want raw body
+      const ok = sendWithBeaconFallback(payload);
+      if (ok) {
+        log(`Sent via Beacon ✅ (response not readable in page)\n\n${JSON.stringify(payload, null, 2)}`, "ok");
+      } else {
+        throw e;
       }
-    });
+    }
+
+    // Optional: listen for connection changes and re-send
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
+    if (conn && typeof conn.addEventListener === "function") {
+      conn.addEventListener("change", async () => {
+        const { access, info } = detectNetworkAccess();
+        const payload2 = { ...payload, timestamp: new Date().toISOString(), network_access: access, connection_type_raw: info.connectionTypeRaw, effective_type: info.effectiveType, downlink_mbps: info.downlink, rtt_ms: info.rtt, save_data: info.saveData, event: "connectionchange" };
+        try {
+          await sendToZapierSimple(payload2);
+          log(`Change detected & sent ✅\n\n${JSON.stringify(payload2, null, 2)}`, "ok");
+        } catch {
+          sendWithBeaconFallback(payload2);
+          log(`Change detected & sent via Beacon ✅\n\n${JSON.stringify(payload2, null, 2)}`, "ok");
+        }
+      });
+    }
+  } catch (err) {
+    log(`Failed to send ❌\n${err}`, "err");
+    console.error(err);
   }
 })();
 </script>
